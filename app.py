@@ -25,6 +25,7 @@ try:
     db_engine = init_connection()
 except Exception as conn_err:
     st.sidebar.error(f"Database Connection Failed: {conn_err}")
+    db_engine = None
 
 # ====================  PANDERA DATA CONTRACT SCHEMA ====================
 dublin_api_schema = pa.DataFrameSchema({
@@ -41,7 +42,7 @@ st.sidebar.caption(f"Infrastructure auto-refreshing every {RELOAD_INTERVAL} seco
 # 2. backend live API ingestion pipe (With Cloud DB Persistent Ingestion)
 @st.cache_data(ttl=RELOAD_INTERVAL)
 def fetch_live_dublin_data_from_api():
-    api_url = "https://cyclocity.fr"
+    api_url = "https://api.cyclocity.fr/contracts/dublin/gbfs/station_status.json"
     try:
         response = requests.get(api_url)
         if response.status_code == 200:
@@ -73,7 +74,9 @@ def fetch_live_dublin_data_from_api():
 df_master = fetch_live_dublin_data_from_api()
 
 # ====================  ADVANCED MACHINE LEARNING ENGINE ====================
-X = df_master[['Hour', 'num_docks_available']]
+if df_master is None or df_master.empty:
+    st.error("No data available from any source.")
+    st.stop()
 y_bikes = df_master['num_bikes_available']
 
 if 'delay_minutes' not in df_master.columns:
@@ -101,7 +104,9 @@ st.markdown("---")
 station_data = df_master[df_master['station_id'] == selected_station]
 
 if not station_data.empty:
-    current_hour = int(station_data['Hour'].iloc[0] if isinstance(station_data['Hour'], pd.Series) else station_data['Hour'])
+    current_hour = int(station_data['Hour'].iloc[0])
+    available_bikes = int(station_data['num_bikes_available'].iloc[0])
+    total_docks = int(station_data['num_docks_available'].iloc[0])
     available_bikes = int(station_data['num_bikes_available'].iloc[0] if isinstance(station_data['num_bikes_available'], pd.Series) else station_data['num_bikes_available'])
     total_docks = int(station_data['num_docks_available'].iloc[0] if isinstance(station_data['num_docks_available'], pd.Series) else station_data['num_docks_available'])
     
