@@ -3,57 +3,83 @@ import pandas as pd
 import numpy as np
 import requests
 import time
+import pandera as pa
 from sklearn.ensemble import RandomForestRegressor
+from sqlalchemy import create_engine  # cloud database engine.
 
-# 1.page ka global configuration set karna (Wide Layout)
+# 1. page ka global configuration set karna.
 st.set_page_config(page_title="Dublin Smart Transit AI", layout="wide")
 
-# ====================  GAP 3: LIVE AUTOMATION & SCHEDULING CORE ====================
-# hamare data project condition ke according har 10 minute (600 sec) me data sink karne ka time circle.
-# (note: testing ke liye ise 30 sec per set kar rahe hai taki aap live refresh dekh sake)
-RELOAD_INTERVAL = 30 
+# ====================  CLOUD DATABASE CONNECTION POOLING ====================
+# connection ko baar baar khulne-band hone se bachane ke liye st.cache_resource
+@st.cache_resource
+def init_connection():
+    # Note: yeh hamare cloud PostgreSQL (Neon.tech / Supabase) ka live connection string hai.
+    # real-world me ise secure environment variable se pass kiya jata hai.
+    # Testing or deployment ko super-fast rakhne ke liye hum ise direct engine me daal rhe hai.
+    db_url = "postgresql://neondb_owner:npg_XF3hYyHw1uGv@ep-calm-sunset-a1me089r-pooler.ap-southeast-1.aws.neon.tech/neondb?sslmode=require"
+    engine = create_engine(db_url, pool_size=5, max_overflow=10)
+    return engine
 
+try:
+    db_engine = init_connection()
+except Exception as conn_err:
+    st.sidebar.error(f"Database Connection Failed: {conn_err}")
+
+# ====================  PANDERA DATA CONTRACT SCHEMA ====================
+dublin_api_schema = pa.DataFrameSchema({
+    "station_id": pa.Column(pa.Int, coerce=True, nullable=False),
+    "num_bikes_available": pa.Column(pa.Int, coerce=True, default=0),
+    "num_docks_available": pa.Column(pa.Int, coerce=True, default=0),
+    "last_reported": pa.Column(pa.Int, coerce=True, nullable=True)
+})
+
+RELOAD_INTERVAL = 30 
 st.sidebar.markdown(f"###  Live Production Sync: ACTIVE")
 st.sidebar.caption(f"Infrastructure auto-refreshing every {RELOAD_INTERVAL} seconds...")
 
-# backend live API ingestion pipeline (phase 4,pahse 8,task 3 wala work)
-@st.cache_data(ttl=RELOAD_INTERVAL) # @st.cache_data ram level per performance optimize karta hai. 
+# 2. backend live API ingestion pipe (With Cloud DB Persistent Ingestion)
+@st.cache_data(ttl=RELOAD_INTERVAL)
 def fetch_live_dublin_data_from_api():
-    # dublin goverment ka bilkul live official API URL.
     api_url = "https://cyclocity.fr"
     try:
         response = requests.get(api_url)
         if response.status_code == 200:
             live_json = response.json()
-            # JSON KO seedhe live flat dataframe me change karna.
-            df_new = pd.json_normalize(live_json['data']['stations'])
+            df_raw = pd.json_normalize(live_json['data']['stations'])
             
-            # timestamp ko local dublin time me convert karna.
+            # Pandera protection circle.
+            df_new = dublin_api_schema.validate(df_raw)
+            
+            # टाtime-series engineering.
             df_new['Reported_Time'] = pd.to_datetime(df_new['last_reported'], unit='s', utc=True).dt.tz_convert('Europe/Dublin')
             df_new['Hour'] = df_new['Reported_Time'].dt.hour
             
-            # is fresh data ko master csv me overwrite/update kar dena (Data Persistence)
-            df_new.to_csv("Dublin_Live_Transit_Master.csv", index=False)
+            # local CSV ki jagah seedhe cloud PostgreSQL database me UPSERT/APPEND karna.
+            # ab  Render re-start hone per bhi data hamesha ke liye safe(protect) rahega.
+            df_new.to_sql('dublin_bikes_live', con=db_engine, if_exists='append', index=False)
+            
             return df_new
     except Exception as e:
-        st.sidebar.error(f"Cloud API Sync Error: {e}")
+        st.sidebar.error(f"Cloud API/Database Sync Error: {e}")
     
-    # agar internet ya API fail ho to local backup file load karna (Fallback Strategy)
-    return pd.read_csv("Dublin_Live_Transit_Master.csv")
+    # Fallback protection circle: koi error aane per cloud database se hi aakhri(last) available data read karna.
+    try:
+        return pd.read_sql("SELECT * FROM dublin_bikes_live ORDER BY Reported_Time DESC LIMIT 100", con=db_engine)
+    except:
+        return pd.read_csv("Dublin_Live_Transit_Master.csv")
 
-# live data pipeline ko trigger karke master dataframe load karna.
+# live data pipeline trigger karna.
 df_master = fetch_live_dublin_data_from_api()
 
 # ====================  ADVANCED MACHINE LEARNING ENGINE ====================
 X = df_master[['Hour', 'num_docks_available']]
 y_bikes = df_master['num_bikes_available']
 
-# buses ki live delay (Predicted Delay in Minutes - simulation based bussiness logic)
 if 'delay_minutes' not in df_master.columns:
     df_master['delay_minutes'] = np.where(df_master['Hour'].isin([8, 9, 17, 18]), 15, 2)
 y_delay = df_master['delay_minutes']
 
-# 100 decision tree wale rendom forest models ko train karna.
 model_bikes = RandomForestRegressor(n_estimators=100, random_state=42).fit(X, y_bikes)
 model_delay = RandomForestRegressor(n_estimators=100, random_state=42).fit(X, y_delay)
 
@@ -63,14 +89,10 @@ station_list = df_master['station_id'].unique()
 with st.sidebar:
     st.markdown("## ⚙️ Control Panel")
     st.info("Select the transit parameters below to update the live AI engine projections.")
-    
-    # dropdown box.
     selected_station = st.selectbox(" Target Station ID:", station_list)
-    
     st.markdown("---")
-    # yeh watch ki sui user ko live dikhagi ki backend data kab update hua.
     st.markdown(f" **Last Server Refresh:**\n `{time.strftime('%H:%M:%S')}`")
-    st.caption(" Developed under strict descriptive patterns for Dublin Infrastructure.")
+    st.caption("Developed under strict descriptive patterns for Dublin Infrastructure.")
 
 # ==================== MAIN DISPLAY UI ARCHITECTURE ====================
 st.title(" Dublin Smart Transit — Live Predictive Dashboard")
@@ -79,9 +101,9 @@ st.markdown("---")
 station_data = df_master[df_master['station_id'] == selected_station]
 
 if not station_data.empty:
-    current_hour = int(station_data['Hour'].values[0] if isinstance(station_data['Hour'].values, np.ndarray) else station_data['Hour'].values)
-    available_bikes = int(station_data['num_bikes_available'].values[0] if isinstance(station_data['num_bikes_available'].values, np.ndarray) else station_data['num_bikes_available'].values)
-    total_docks = int(station_data['num_docks_available'].values[0] if isinstance(station_data['num_docks_available'].values, np.ndarray) else station_data['num_docks_available'].values)
+    current_hour = int(station_data['Hour'].iloc[0] if isinstance(station_data['Hour'], pd.Series) else station_data['Hour'])
+    available_bikes = int(station_data['num_bikes_available'].iloc[0] if isinstance(station_data['num_bikes_available'], pd.Series) else station_data['num_bikes_available'])
+    total_docks = int(station_data['num_docks_available'].iloc[0] if isinstance(station_data['num_docks_available'], pd.Series) else station_data['num_docks_available'])
     
     st.markdown("###  Current Station Analytics")
     col1, col2 = st.columns(2)
@@ -109,6 +131,5 @@ if not station_data.empty:
 else:
     st.error("No data found for this station.")
 
-# time corcle: ye line browser khula rehne per har 30 second me poore page ko khud re-run kar degi.
 time.sleep(RELOAD_INTERVAL)
 st.rerun()
