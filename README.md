@@ -1,9 +1,11 @@
 # 🍀 Dublin Smart Transit — Real-Time Predictive AI & MLOps Infrastructure
 
-<!-- LIVE PRODUCTION BADGES -->
-[![Live Production Dashboard](https://shields.io)](https://onrender.com)
-[![Production Source Code](https://shields.io)](https://github.com)
-[![Data Endpoint](https://shields.io)](https://cyclocity.fr)
+### 🚀 LIVE PRODUCTION LINKS
+*   🟢 **Live Web Dashboard:** https://onrender.com
+*   🐙 **GitHub Source Code Repository:** https://github.com
+*   🌐 **Official Live Data Feed (Dublin Gov API):** https://cyclocity.fr
+
+---
 
 An enterprise-grade, high-availability data engineering and streaming pipeline designed to ingest live municipal transit streams, enforce runtime data contracts, and serve real-time machine learning predictions across Dublin City.
 
